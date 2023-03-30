@@ -1,0 +1,212 @@
+---
+- hosts: "all"
+  tasks:
+    - name: Install zabbix repo deb file
+      apt:
+        deb: https://repo.zabbix.com/zabbix/6.4/ubuntu/pool/main/z/zabbix-release/zabbix-release_6.4-1+ubuntu22.04_all.deb
+      when: ansible_facts['distribution'] == "Ubuntu" 
+
+    - name: Install zabbix repo rpm file
+      yum:
+        name: https://repo.zabbix.com/zabbix/6.4/rhel/7/x86_64/zabbix-release-6.4-1.el7.noarch.rpm
+      when: ansible_facts['distribution'] == "CentOS" 
+
+- hosts: "db"
+  vars_files:
+    - server_configuration.yml
+  tasks:
+    - name: Install postgresql packages 
+      apt:
+        package:
+        - postgresql 
+        - postgresql-contrib
+        - python3
+        - python3-pip
+        - zabbix-sql-scripts
+        - acl
+        state: present
+        update_cache: yes
+
+    - name: Install PostgreSQL Module for Python
+      pip:
+        name: psycopg2-binary
+
+    - name: Ensure that PostgreSQL is restarted
+      systemd:
+        state: restarted
+        name: postgresql
+        enabled: true
+            
+    - name: Create a Superuser PostgreSQL database user
+      become: yes
+      become_user: postgres
+      postgresql_user:
+        name: "{{ db_username }}"
+        password: "{{ db_password }}"
+        role_attr_flags: CREATEDB,SUPERUSER,CREATEROLE
+        encrypted: yes
+        state: present
+
+    - name: "Allow md5 connection for the db user"
+      postgresql_pg_hba:
+        dest: "/etc/postgresql/14/main/pg_hba.conf"
+        contype: host
+        databases: all
+        source: "{{ cidr_block }}"
+        method: md5
+        users: "{{ db_username }}"
+        create: true
+      become: yes
+      become_user: postgres
+      notify: restart postgres
+
+    - name: "Create app database"
+      postgresql_db:
+        state: present
+        name: "{{ db_name }}"
+      become: yes
+      become_user: postgres
+
+    - name: "Grant db user access to app db"
+      postgresql_privs:
+        type: database
+        database: "{{ db_name }}"
+        roles: "{{ db_username }}"
+        grant_option: no
+        privs: all
+      become: yes
+      become_user: postgres
+
+    - name: "Add Zabbix database sql file onto DB"
+      shell: zcat /usr/share/zabbix-sql-scripts/postgresql/server.sql.gz | psql zabbix 
+      become: true
+      become_user: postgres
+      
+    - name: add new configuration to "postgresql.conf"
+      blockinfile:
+        dest: /etc/postgresql/14/main/postgresql.conf 
+        block: |
+          listen_addresses = '*'
+      notify: restart postgres
+
+  handlers:
+    - name: restart postgres
+      systemd:
+            state: restarted
+            name: postgresql
+
+- hosts: "backend"
+  vars_files:
+    - server_configuration.yml
+  tasks:
+    - name: Install zabbix backend packages
+      apt:
+        package:
+        - zabbix-server-pgsql
+        - php8.1-pgsql
+        - zabbix-agent
+        state: present
+        update_cache: yes
+
+    - name: Set up zabbix configuration
+      template:
+        src: "{{ playbook_dir }}/zabbix_server.conf.j2"
+        dest: /etc/zabbix/zabbix_server.conf
+
+    - name: Make sure a web service unit is running
+      systemd:
+        state: restarted
+        name: zabbix-server
+        enabled: true
+        
+- hosts: "frontend"
+  vars_files:
+    - server_configuration.yml
+  tasks:
+    - name: Install zabbix frontend packages
+      apt:
+        package:
+        - zabbix-server-pgsql
+        - zabbix-frontend-php    
+        - php8.1-pgsql
+        - zabbix-nginx-conf
+        - zabbix-agent
+        state: present
+        update_cache: yes
+
+    - name: Set up nginx configuration
+      template:
+        src: "{{ playbook_dir }}/zabbix.conf.php.j2"
+        dest: /etc/zabbix/web/zabbix.conf.php
+
+    - name: change listen
+      lineinfile:
+        path: /etc/zabbix/nginx.conf
+        regexp: '#        listen          8080;'
+        line: "        listen          {{ frontend_port }};"
+
+    - name: change server name
+      lineinfile:
+        path: /etc/zabbix/nginx.conf
+        regexp: '#        server_name     example.com;'
+        line: "        server_name _ default_server;"
+
+    - name: change server name
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Make sure a web service unit is running
+      systemd:
+        state: restarted
+        name: nginx
+        enabled: true
+
+    - name: Print zabbix frontend addr
+      debug:
+        msg:
+        - "Zabbix Web address - http://{{inventory_hostname}}:{{frontend_port}}/"
+
+- hosts: "centos"
+  vars_files:
+    - server_configuration.yml
+  tasks:
+    - name: Install zabbix agent packages
+      yum:
+        name:
+        - zabbix-agent
+        state: present
+        update_cache: yes
+        
+    - name: Set up zabbix agent configuration
+      template:
+        src: "{{ playbook_dir }}/zabbix_agentd.conf.j2"
+        dest: /etc/zabbix/zabbix_agentd.conf
+
+    - name: restart agent
+      systemd:
+            state: restarted
+            name: zabbix-agent
+            enabled: true
+
+- hosts: "ubuntu"
+  vars_files:
+    - server_configuration.yml
+  tasks:
+    - name: Install zabbix backend packages
+      apt:
+        package:
+        - zabbix-agent
+        state: present
+        update_cache: yes
+
+    - name: Set up zabbix agent configuration
+      template:
+        src: "{{ playbook_dir }}/zabbix_agentd.conf.j2"
+        dest: /etc/zabbix/zabbix_agentd.conf
+
+    - name: restart agent
+      systemd:
+            state: restarted
+            name: zabbix-agent
+            enabled: true

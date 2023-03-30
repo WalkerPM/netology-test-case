@@ -1,0 +1,39 @@
+version: "3.9"
+services:
+  zabbix:
+    restart: always
+    image: "zabbix/zabbix-server-pgsql:6.4.0-alpine"
+    environment:
+      POSTGRES_USER: ${PSQL_USER}
+      POSTGRES_PASSWORD: ${PSQL_PASSWORD}
+      DB_SERVER_HOST: postgresql
+    volumes:
+      - "./postgres-data:/var/lib/postgresql/data:rw"
+    depends_on:
+      postgresql:
+        condition: service_healthy
+
+  nginx:
+    image: "zabbix/zabbix-web-nginx-pgsql:6.4-alpine-latest"
+    restart: always
+    environment:
+      POSTGRES_USER: ${PSQL_USER}
+      POSTGRES_PASSWORD: ${PSQL_PASSWORD}
+      DB_SERVER_HOST: postgresql
+      ZBX_SERVER_HOST: zabbix
+    ports:
+      - "${FRONTEND_PORT}:8080"
+    depends_on:
+      postgresql:
+        condition: service_healthy
+
+  postgresql:
+    container_name: zabbix-postgresql
+    image: "postgres:15.2-alpine"
+    restart: always
+    environment:
+      POSTGRES_USER: ${PSQL_USER}
+      POSTGRES_PASSWORD: ${PSQL_PASSWORD}
+    expose:
+      - 5432
+        

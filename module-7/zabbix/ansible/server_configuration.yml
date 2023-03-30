@@ -1,0 +1,4 @@
+frontend_port: 80
+db_name: zabbix
+db_username: zabbix
+db_password: zabbix
